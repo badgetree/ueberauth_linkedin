@@ -5,13 +5,15 @@ defmodule Ueberauth.Strategy.LinkedIn do
 
   use Ueberauth.Strategy,
     uid_field: :id,
-    default_scope: "r_basicprofile r_emailaddress"
+    default_scope: "r_liteprofile r_emailaddress"
 
   alias Ueberauth.Auth.Info
   alias Ueberauth.Auth.Credentials
   alias Ueberauth.Auth.Extra
 
   @state_cookie_name "ueberauth_linkedin_state"
+  @user_query "/v2/me?projection=(id,localizedFirstName,localizedLastName,profilePicture(displayImage~:playableStreams))"
+  @email_query "/v2/clientAwareMemberHandles?q=members&projection=(elements*(primary,type,handle~))"
 
   @doc """
   Handles initial request for LinkedIn authentication.
@@ -49,6 +51,7 @@ defmodule Ueberauth.Strategy.LinkedIn do
         conn
         |> delete_resp_cookie(@state_cookie_name)
         |> fetch_user(token)
+        |> fetch_email(token)
       else
         conn
         |> delete_resp_cookie(@state_cookie_name)
@@ -102,12 +105,13 @@ defmodule Ueberauth.Strategy.LinkedIn do
   """
   def info(conn) do
     user = conn.private.linkedin_user
+    email = conn.private.linkedin_email
 
     %Info{
-      email: user["emailAddress"],
-      first_name: user["firstName"],
-      image: user["pictureUrl"],
-      last_name: user["lastName"]
+      email: email,
+      first_name: user["localizedFirstName"],
+      image: extract_image(user["profilePicture"]),
+      last_name: user["localizedLastName"]
     }
   end
 
@@ -126,15 +130,52 @@ defmodule Ueberauth.Strategy.LinkedIn do
 
   defp skip_url_encode_option, do: [path_encode_fun: fn(a) -> a end]
 
-  defp user_query do
-    "/v1/people/~:(id,picture-url,email-address,firstName,lastName)?format=json"
+  defp extract_image(%{"displayImage~" => %{"elements" => elements}}) when length(elements) > 0 do
+    element =
+      Enum.max_by(elements, fn element ->
+        get_in(element, ["data", "com.linkedin.digitalmedia.mediaartifact.StillImage", "storageSize", "width"]) || 0
+      end)
+
+    case element do
+      %{"identifiers" => identifiers} when length(identifiers) > 0 ->
+        Enum.at(identifiers, 0)["identifier"]
+
+      _ ->
+        nil
+    end
+  end
+  defp extract_image(_), do: nil
+
+  defp extract_email(%{"elements" => elements}) do
+    case Enum.filter(elements, &(&1["type"] == "EMAIL")) do
+      [] ->
+        nil
+      [element] ->
+        extract_email(element)
+      email_elements ->
+        element = Enum.find(email_elements, &(&1["primary"])) || Enum.at(email_elements, 0)
+        extract_email(element)
+    end
+  end
+  defp extract_email(%{"handle~" => %{"emailAddress" => email}}), do: email
+  defp extract_email(_body), do: nil
+
+  defp fetch_email(conn, token) do
+    resp = Ueberauth.Strategy.LinkedIn.OAuth.get(token, @email_query, [], skip_url_encode_option())
+    case resp do
+      {:ok, %OAuth2.Response{status_code: 401, body: _body}} ->
+        set_errors!(conn, [error("token", "unauthorized")])
+      {:ok, %OAuth2.Response{status_code: status_code, body: body}}
+        when status_code in 200..399 ->
+          put_private(conn, :linkedin_email, extract_email(body))
+      {:error, %OAuth2.Error{reason: reason} } ->
+        set_errors!(conn, [error("OAuth2", reason)])
+    end
   end
 
   defp fetch_user(conn, token) do
     conn = put_private(conn, :linkedin_token, token)
-    resp = Ueberauth.Strategy.LinkedIn.OAuth.get(token, user_query, [], skip_url_encode_option)
-
-IO.puts("linkedin fetch_user, resp = #{inspect resp}")
+    resp = Ueberauth.Strategy.LinkedIn.OAuth.get(token, @user_query, [], skip_url_encode_option())
 
     case resp do
       { :ok, %OAuth2.Response{status_code: 401, body: _body}} ->
@@ -148,6 +189,6 @@ IO.puts("linkedin fetch_user, resp = #{inspect resp}")
   end
 
   defp option(conn, key) do
-    Dict.get(options(conn), key, Dict.get(default_options, key))
+    Keyword.get(options(conn), key, Keyword.get(default_options(), key))
   end
 end

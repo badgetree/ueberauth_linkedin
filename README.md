@@ -83,12 +83,12 @@ Or with scope:
 
     /auth/linkedin?state=csrf_token_here&scope=r_emailaddress
 
-By default the requested scope is "r_basicprofile r_emailaddress". Scope can be configured either explicitly as a `scope` query value on the request path or in your configuration:
+By default the requested scope is "r_liteprofile r_emailaddress". Scope can be configured either explicitly as a `scope` query value on the request path or in your configuration:
 
 ```elixir
 config :ueberauth, Ueberauth,
   providers: [
-    linkedin: {Ueberauth.Strategy.LinkedIn, [default_scope: "r_basicprofile r_emailaddress"]}
+    linkedin: {Ueberauth.Strategy.LinkedIn, [default_scope: "r_liteprofile r_emailaddress"]}
   ]
 ```
 
